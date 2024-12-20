@@ -3,8 +3,11 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
 	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,10 +37,10 @@ func getPrivateConnection(address string) (c net.Conn) {
 	// 서버에 연결
 	connection, err = net.Dial("tcp", address+":65329")
 	if err != nil {
-		if _, ok := err.(*net.DNSError); ok {
+		if _, isErr := err.(*net.DNSError); isErr {
 			fmt.Println("DNS 조회에 실패했습니다. 주소를 다시 확인하세요.")
 			return nil
-		} else if _, ok := err.(*net.AddrError); ok {
+		} else if _, isErr := err.(*net.AddrError); isErr {
 			fmt.Println("잘못된 주소 형식입니다. 다시 확인하세요.")
 			return nil
 		} else {
@@ -53,33 +56,46 @@ func chatEngine(c net.Conn) {
 	fmt.Print("\033[H\033[2J")
 	fmt.Println("   통신 연결 완료. !exit를 입력해 연결 해제")
 	var ctrl sync.WaitGroup
+	var sendBlocker bool
+	keyIn := make(chan string)
 	ctrl.Add(1)
-	go sendMsg(c, &ctrl)
-	go recvMsg(c)
+	go send(c, &ctrl, &sendBlocker, keyIn)
+	go recv(c, &sendBlocker, keyIn)
 
 	ctrl.Wait()
 	fmt.Println("엔터를 눌러 종료...")
 	c.Close()
 }
 
-func sendMsg(c net.Conn, ctrl *sync.WaitGroup) {
+func send(c net.Conn, ctrl *sync.WaitGroup, blocker *bool, keyChan chan<- string) {
 	for {
 		reader := bufio.NewReader(os.Stdin)
 		input, _ := reader.ReadString('\n')
 		input = strings.Trim(input, "\r\n")
+		if *blocker {
+			keyChan <- input
+			continue
+		}
 		fmt.Print("\033[A\033[2K")
 		if input == "!exit" {
-			transmit(c, "\000SENDEREXIT")
+			transmitText(c, "\000SENDEREXIT")
 			ctrl.Done()
 			return
 		}
-		transmit(c, input)
+		if input == "!file" {
+			transmitFile(c)
+			continue
+		}
+		if input == "" {
+			continue
+		}
+		transmitText(c, input)
 	}
 }
 
-func transmit(c net.Conn, input string) {
+func transmitText(c net.Conn, input string) {
 	var dirc int
-	_, err := c.Write([]byte(input + "\n"))
+	_, err := c.Write([]byte(fmt.Sprintf("t%s\n", input)))
 	if err != nil {
 		dirc = 2
 	} else {
@@ -91,17 +107,78 @@ func transmit(c net.Conn, input string) {
 	go printChat(input, dirc)
 }
 
-func recvMsg(c net.Conn) {
+func transmitFile(c net.Conn) {
+	fmt.Println("   전송할 파일의 경로를 입력하세요...")
+	var src string
+	fmt.Scanln(&src)
+	src = strings.ReplaceAll(src, "\"", "")
+	file, fErr := os.ReadFile(src)
+	if _, isErr := fErr.(*os.PathError); isErr {
+		fmt.Println("   파일을 찾을 수 없습니다.")
+		return
+	}
+
+	var dirc int
+	_, err := c.Write([]byte(fmt.Sprintf("f%d|%s|%s", len(file), filepath.Ext(src), file)))
+	if err != nil {
+		dirc = 2
+	} else {
+		dirc = 0
+	}
+	go printChat("   파일 "+src+" 전송함", dirc)
+}
+
+func recv(c net.Conn, sendBlock *bool, keyChan chan string) {
 	for {
-		scanner := bufio.NewScanner(c)
-		if scanner.Scan() {
-			message := scanner.Text()
-			if message == "\000SENDEREXIT" {
-				fmt.Println("상대방이 연결을 끊었습니다. !exit를 입력하여 연결 해제")
+		reader := bufio.NewReader(c)
+		typecode, _ := reader.ReadByte()
+		if typecode == 't' {
+			message, _ := reader.ReadString('\n')
+			if message == "\000SENDEREXIT\n" {
+				fmt.Println("   상대방이 연결을 끊었습니다. !exit를 입력하여 연결 해제")
 				return
 			}
-			go printChat(message, 1)
+			go printChat(strings.Trim(message, "\n"), 1)
 		}
+		if typecode == 'f' {
+			fmt.Println("파일 수신 중...")
+			fileLen, _ := reader.ReadString('|')
+			fileLen = strings.Trim(fileLen, "|")
+			fileLenInt, _ := strconv.Atoi(fileLen)
+			fileExt, _ := reader.ReadString('|')
+			fileExt = strings.Trim(fileExt, "|")
+			data := make([]byte, fileLenInt)
+			io.ReadFull(reader, data)
+			go recvFile(data, fileExt, sendBlock, keyChan)
+			continue
+		}
+	}
+}
+
+func recvFile(readData []byte, fileExt string, sendBlock *bool, keyChan <-chan string) {
+	*sendBlock = true
+	defer func() {
+		*sendBlock = false
+	}()
+	fmt.Println("   파일을 수신했습니다. 저장하려면 y 를 입력하세요.")
+	accept := <-keyChan
+	if accept != "y" {
+		fmt.Println("   파일 수신을 거부했습니다.")
+		return
+	} else {
+		fmt.Println("   파일을 저장할 경로를 입력하세요.")
+		dst := <-keyChan
+		dst = strings.ReplaceAll(dst, "\"", "") + fileExt
+		file, fErr := os.Create(dst)
+		defer file.Close()
+		writer := bufio.NewWriter(file)
+		writer.Write(readData)
+		writer.Flush()
+		if fErr != nil {
+			fmt.Println("   파일 저장 중 문제가 발생했습니다.")
+			return
+		}
+		fmt.Println("   파일 저장 완료")
 	}
 }
 
