@@ -54,7 +54,7 @@ func getPrivateConnection(address string) (c net.Conn) {
 
 func chatEngine(c net.Conn) {
 	fmt.Print("\033[H\033[2J")
-	fmt.Println("   통신 연결 완료. !exit를 입력해 연결 해제")
+	fmt.Println("   통신 연결 완료. !exit를 입력해 연결 해제. !file로 파일 전송")
 	var ctrl sync.WaitGroup
 	var sendBlocker bool
 	keyIn := make(chan string)
@@ -108,13 +108,13 @@ func transmitText(c net.Conn, input string) {
 }
 
 func transmitFile(c net.Conn) {
-	fmt.Println("   전송할 파일의 경로를 입력하세요...")
+	printChat("전송할 파일의 경로를 입력하세요... (파일 -> 우클릭 -> 경로로 복사(Ctrl+Shift+C) 후 붙여넣기)", 3)
 	var src string
 	fmt.Scanln(&src)
 	src = strings.ReplaceAll(src, "\"", "")
 	file, fErr := os.ReadFile(src)
 	if _, isErr := fErr.(*os.PathError); isErr {
-		fmt.Println("   파일을 찾을 수 없습니다.")
+		printChat("파일을 찾을 수 없습니다.", 4)
 		return
 	}
 
@@ -125,7 +125,7 @@ func transmitFile(c net.Conn) {
 	} else {
 		dirc = 0
 	}
-	go printChat("   파일 "+src+" 전송함", dirc)
+	go printChat("파일 "+src+" 전송함", dirc)
 }
 
 func recv(c net.Conn, sendBlock *bool, keyChan chan string) {
@@ -141,7 +141,7 @@ func recv(c net.Conn, sendBlock *bool, keyChan chan string) {
 			go printChat(strings.Trim(message, "\n"), 1)
 		}
 		if typecode == 'f' {
-			fmt.Println("파일 수신 중...")
+			printChat("파일 수신 중...", 1)
 			fileLen, _ := reader.ReadString('|')
 			fileLen = strings.Trim(fileLen, "|")
 			fileLenInt, _ := strconv.Atoi(fileLen)
@@ -160,13 +160,13 @@ func recvFile(readData []byte, fileExt string, sendBlock *bool, keyChan <-chan s
 	defer func() {
 		*sendBlock = false
 	}()
-	fmt.Println("   파일을 수신했습니다. 저장하려면 y 를 입력하세요.")
+	printChat("파일을 수신했습니다. 저장하려면 y 를 입력하세요.", 3)
 	accept := <-keyChan
 	if accept != "y" {
-		fmt.Println("   파일 수신을 거부했습니다.")
+		printChat("파일 수신을 거부했습니다.", 4)
 		return
 	} else {
-		fmt.Println("   파일을 저장할 경로를 입력하세요.")
+		printChat("파일을 저장할 경로를 입력하세요.", 3)
 		dst := <-keyChan
 		dst = strings.ReplaceAll(dst, "\"", "") + fileExt
 		file, fErr := os.Create(dst)
@@ -175,10 +175,10 @@ func recvFile(readData []byte, fileExt string, sendBlock *bool, keyChan <-chan s
 		writer.Write(readData)
 		writer.Flush()
 		if fErr != nil {
-			fmt.Println("   파일 저장 중 문제가 발생했습니다.")
+			printChat("파일 저장 중 문제가 발생했습니다.", 4)
 			return
 		}
-		fmt.Println("   파일 저장 완료")
+		printChat("파일 저장 완료", 3)
 	}
 }
 
@@ -188,8 +188,12 @@ func printChat(message string, direction int) {
 		formatted += "<< "
 	} else if direction == 1 {
 		formatted += ">> "
-	} else {
+	} else if direction == 2 {
 		formatted += "\033[31mX< "
+	} else if direction == 3 {
+		formatted += "** "
+	} else if direction == 4 {
+		formatted += "\033[31m** "
 	}
 	formatted += "["
 	formatted += time.Now().Format("15:04:05")
