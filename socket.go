@@ -19,13 +19,14 @@ func createServer() (c net.Conn) {
 	listener, err := net.Listen("tcp", ":65329")
 	if err != nil {
 		fmt.Println("서버 시작 실패")
-		return
+		return nil
 	}
+	defer listener.Close()
 	// 연결 수락
 	connection, err := listener.Accept()
 	if err != nil {
 		fmt.Println("소켓 연결 실패")
-
+		return nil
 	}
 	return connection
 }
@@ -55,6 +56,7 @@ func getPrivateConnection(address string) (c net.Conn) {
 func chatEngine(c net.Conn) {
 	fmt.Print("\033[H\033[2J")
 	fmt.Println("   통신 연결 완료. !exit를 입력해 연결 해제. !file로 파일 전송")
+	defer c.Close()
 	var ctrl sync.WaitGroup
 	var sendBlocker bool
 	keyIn := make(chan string)
@@ -64,7 +66,6 @@ func chatEngine(c net.Conn) {
 
 	ctrl.Wait()
 	fmt.Println("엔터를 눌러 종료...")
-	c.Close()
 }
 
 func send(c net.Conn, ctrl *sync.WaitGroup, blocker *bool, keyChan chan<- string) {
@@ -72,11 +73,11 @@ func send(c net.Conn, ctrl *sync.WaitGroup, blocker *bool, keyChan chan<- string
 		reader := bufio.NewReader(os.Stdin)
 		input, _ := reader.ReadString('\n')
 		input = strings.Trim(input, "\r\n")
+		fmt.Print("\033[A\033[2K")
 		if *blocker {
 			keyChan <- input
 			continue
 		}
-		fmt.Print("\033[A\033[2K")
 		if input == "!exit" {
 			transmitText(c, "\000SENDEREXIT")
 			ctrl.Done()
@@ -168,9 +169,10 @@ func recvFile(readData []byte, fileExt string, sendBlock *bool, keyChan <-chan s
 	} else {
 		printChat("파일을 저장할 경로를 입력하세요.", 3)
 		dst := <-keyChan
-		dst = strings.ReplaceAll(dst, "\"", "") + fileExt
+		dst = strings.ReplaceAll(dst, "\"", "")
+		dst, _ = strings.CutSuffix(dst, fileExt)
+		dst += fileExt
 		file, fErr := os.Create(dst)
-		defer file.Close()
 		writer := bufio.NewWriter(file)
 		writer.Write(readData)
 		writer.Flush()
@@ -178,7 +180,8 @@ func recvFile(readData []byte, fileExt string, sendBlock *bool, keyChan <-chan s
 			printChat("파일 저장 중 문제가 발생했습니다.", 4)
 			return
 		}
-		printChat("파일 저장 완료", 3)
+		defer file.Close()
+		printChat("파일 저장 완료. "+dst, 3)
 	}
 }
 
@@ -191,7 +194,7 @@ func printChat(message string, direction int) {
 	} else if direction == 2 {
 		formatted += "\033[31mX< "
 	} else if direction == 3 {
-		formatted += "** "
+		formatted += "\033[34m** "
 	} else if direction == 4 {
 		formatted += "\033[31m** "
 	}
@@ -202,22 +205,37 @@ func printChat(message string, direction int) {
 	fmt.Println(formatted + "\033[0m")
 }
 
-func main() {
+func body() int {
 	fmt.Print("\033[H\033[2J")
 	var address string
 	fmt.Println("상대방과 연결하려면 [IP주소] 혹은 [도메인] 을 입력")
 	fmt.Print("포트를 개방하여 수신을 대기하려면 [s] 를 입력하세요: ")
 	fmt.Scanln(&address)
 
+	var c net.Conn
 	if address == "s" {
 		fmt.Print("\033[H\033[2J")
-		c := createServer()
-		chatEngine(c)
+		c = createServer()
 	} else {
-		c := getPrivateConnection(address)
-		chatEngine(c)
+		c = getPrivateConnection(address)
 	}
+	if c == nil {
+		var input string
+		fmt.Scanln(&input)
+		return -1
+	}
+	chatEngine(c)
 
 	var input string
 	fmt.Scanln(&input)
+	return 0
+}
+
+func main() {
+	for {
+		exitcode := body()
+		if exitcode == 0 {
+			return
+		}
+	}
 }
